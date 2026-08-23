@@ -11,6 +11,17 @@ python3 app.py
 
 سپس `http://127.0.0.1:8000` را باز کنید. برنامه برای دریافت داده به اینترنت نیاز دارد.
 
+### توسعه با VS Code
+
+پوشهٔ پروژه را در VS Code باز کنید و از بخش **Run and Debug** تنظیم
+`GoldScope: Run & Debug` را اجرا کنید. Taskهای آماده نیز از مسیر
+**Terminal → Run Task** در دسترس‌اند:
+
+- `GoldScope: Run Server`
+- `GoldScope: Run Tests`
+- `GoldScope: Check JavaScript`
+- `GoldScope: Build Liara ZIP`
+
 در استقرار سرور، برنامه روی مقدار متغیر `HOST` (پیش‌فرض `0.0.0.0`) و `PORT`
 گوش می‌دهد. مسیر `/health` وضعیت دیتابیس، تعداد داده‌ها و آخرین اجرای جمع‌آور را
 به صورت JSON برمی‌گرداند.

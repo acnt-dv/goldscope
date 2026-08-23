@@ -1,0 +1,18 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "GoldScope: Run & Debug",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/app.py",
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "HOST": "127.0.0.1",
+        "PORT": "8000",
+        "PYTHONPYCACHEPREFIX": "/tmp/goldscope-pycache"
+      }
+    }
+  ]
+}
