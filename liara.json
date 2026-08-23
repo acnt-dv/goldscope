@@ -1,0 +1,9 @@
+{
+  "args": ["python3 main.py"],
+  "disks": [
+    {
+      "name": "database",
+      "mountTo": "data"
+    }
+  ]
+}

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>GoldScope</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="shell">
+    <header>
+      <div class="brand"><span class="mark">Au</span><div><h1>GoldScope</h1><p>تحلیل هوشمند طلای ۱۸ و ۲۴ عیار با ذخیره دائمی داده</p></div></div>
+      <div class="live"><i></i> داده لحظه‌ای TGJU</div>
+    </header>
+
+    <section class="controls panel">
+      <div><label>نوع مدل</label><div class="input-row model-row"><button class="chip active" data-model="short">کوتاه‌مدت</button><button class="chip" data-model="long">بلندمدت</button></div></div>
+      <div><label>عیار</label><div class="input-row karat-row"><button class="chip active" data-karat="18">۱۸ عیار · ۷۵۰</button><button class="chip" data-karat="24">۲۴ عیار · ۹۹۹</button></div></div>
+      <div><label for="horizon">افق پیش‌بینی</label><select id="horizon"><option value="15">۱۵ دقیقه</option><option value="30">۳۰ دقیقه</option><option value="60" selected>۱ ساعت</option><option value="240">۴ ساعت</option></select></div>
+      <button id="refresh" class="primary">به‌روزرسانی پیش‌بینی</button>
+    </section>
+
+    <div id="status" class="status">در حال دریافت تیک‌های بازار و ساخت کندل ۵ دقیقه‌ای…</div>
+
+    <section id="dashboard" class="hidden">
+      <div class="hero-grid">
+        <article class="panel current">
+          <div class="forecast-head"><p class="eyebrow">آخرین قیمت محاسبه‌شده</p><span id="marketMode" class="mode"></span></div>
+          <div id="currentPrice" class="price"></div>
+          <p id="latestDate" class="muted"></p><p id="directTime" class="micro"></p>
+        </article>
+        <article class="panel forecast">
+          <div class="forecast-head"><p id="forecastTitle" class="eyebrow">پیش‌بینی کوتاه‌مدت</p><span id="direction" class="direction"></span></div>
+          <div id="prediction" class="price"></div>
+          <p id="interval" class="range"></p>
+        </article>
+      </div>
+
+      <section id="marketAnalysis" class="analysis-grid hidden">
+        <article class="panel analysis-card">
+          <p class="eyebrow">حباب قیمت جاری</p>
+          <strong id="bubblePercent" class="analysis-value"></strong>
+          <p id="bubbleAmount" class="muted"></p>
+          <div class="analysis-row"><span>ارزش نظری</span><b id="theoreticalPrice"></b></div>
+        </article>
+        <article class="panel analysis-card">
+          <p class="eyebrow">ارزیابی شرایط بازار</p>
+          <strong id="stanceTitle" class="analysis-value"></strong>
+          <p id="stanceConfidence" class="muted"></p>
+          <ul id="stanceReasons" class="reasons"></ul>
+        </article>
+        <article class="panel analysis-card resistance-card">
+          <p class="eyebrow">۵ مقاومت و سقف بعدی</p>
+          <div id="resistanceLevels" class="resistance-levels"></div>
+          <div class="break-levels">
+            <div><span>تأیید شکست صعودی</span><b id="upsideBreak"></b></div>
+            <div><span>شکست نزولی</span><b id="downsideBreak"></b></div>
+          </div>
+          <p class="lower-title">مقاومت‌های برگشتی زیر قیمت پس از ریزش</p>
+          <div id="lowerResistanceLevels" class="resistance-levels lower-levels"></div>
+        </article>
+      </section>
+
+      <section id="tradePlan" class="panel trade-plan hidden">
+        <div class="section-head">
+          <div><p class="eyebrow">برنامه پیشنهادی مدیریت معامله</p><h2>پله‌های ورود و خروج بر اساس قیمت جاری</h2></div>
+          <span id="tradePlanSummary" class="badge"></span>
+        </div>
+        <div class="trade-grid">
+          <div><h3 class="buy-heading">پله‌های ورود پیشنهادی</h3><div id="entryLevels" class="ladder"></div></div>
+          <div><h3 class="sell-heading">پله‌های خروج پیشنهادی</h3><div id="exitLevels" class="ladder"></div></div>
+        </div>
+        <div class="stop-row"><span>حد ابطال برنامه</span><b id="stopLoss"></b><small id="stopLossDistance"></small></div>
+        <p class="trade-disclaimer">این پله‌ها ابزار مدیریت ریسک آموزشی‌اند؛ پیش از معامله باید اندازه سرمایه، کارمزد، افق زمانی و تحمل زیان شخصی را لحاظ کنید.</p>
+      </section>
+
+      <article class="panel chart-panel">
+        <div class="section-head"><div><p id="chartEyebrow" class="eyebrow">کندل‌های ۵ دقیقه‌ای جلسه جاری</p><h2 id="chartTitle">قیمت هر گرم</h2></div><span id="karatBadge" class="badge"></span></div>
+        <svg id="chart" viewBox="0 0 960 300" role="img" aria-label="نمودار قیمت طلا"></svg>
+      </article>
+
+      <div class="metrics">
+        <article class="panel"><p class="eyebrow">خطای میانگین خارج از نمونه</p><strong id="mae"></strong><small id="testDays"></small></article>
+        <article class="panel"><p class="eyebrow">دقت جهت حرکت</p><strong id="accuracy"></strong><small>صعود یا نزول در آزمون گذشته‌نگر</small></article>
+        <article class="panel"><p class="eyebrow">داده‌های مدل</p><strong id="observations"></strong><small id="observationUnit">کندل ۵ دقیقه‌ای</small></article>
+        <article class="panel"><p class="eyebrow">مدل منتخب امروز</p><strong id="modelName" class="model-name"></strong><small>کمترین خطا روی داده نگه‌داشته‌شده</small></article>
+      </div>
+
+      <p id="riskInfo" class="risk-info"></p>
+      <p id="edgeInfo" class="edge-info"></p>
+
+      <aside id="noticeText" class="notice"><b>نکته مهم:</b> وقتی بازار ایران تعطیل است معامله واقعی ۲۴ساعته برای طلای داخلی وجود ندارد؛ برنامه قیمت نظری را از آخرین نرخ مستقیم و حرکت اونس می‌سازد. پیش‌بینی تضمین یا سیگنال معامله نیست.</aside>
+      <footer>منابع: <a href="https://www.tgju.org/profile/geram18" target="_blank" rel="noreferrer">طلای ۱۸ عیار TGJU</a> · <a href="https://www.tgju.org/profile/ons" target="_blank" rel="noreferrer">اونس جهانی TGJU</a> · قیمت‌ها تومان/گرم · بروزرسانی خودکار هر ۶۰ ثانیه</footer>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

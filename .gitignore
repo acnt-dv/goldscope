@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+
+# Runtime database and generated deployment archives
+data/
+outputs/
+
+# Local scratch files
+work/
+.env
+.env.*
