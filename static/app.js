@@ -97,18 +97,24 @@ function renderTradePlan(plan) {
   $('stopLossDistance').textContent = `${pct.format(plan.stopLossDistancePercent)}٪ نسبت به قیمت جاری`;
 }
 
-async function load() {
-  if (loading) return;
-  loading = true;
-  $('status').className = 'status';
-  $('status').textContent = selectedModelType === 'short' ? 'در حال دریافت تیک‌ها، ساخت کندل‌های ۵ دقیقه‌ای و اجرای آزمون…' : 'در حال همگام‌سازی تاریخچه چندساله طلا، دلار و اونس…';
-  $('refresh').disabled = true;
+function cacheKey() {
+  return `goldscope:${selectedModelType}:${selectedKarat}:${$('horizon').value}`;
+}
+
+function remember(data) {
+  try { localStorage.setItem(cacheKey(), JSON.stringify(data)); } catch (_) {}
+}
+
+function recalled() {
   try {
-    const horizon = $('horizon').value;
-    const endpoint = selectedModelType === 'short' ? `/api/intraday?karat=${selectedKarat}&horizon=${horizon}` : `/api/longterm?karat=${selectedKarat}&horizon=${horizon}`;
-    const response = await fetch(endpoint);
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || 'خطای ناشناخته');
+    const value = localStorage.getItem(cacheKey());
+    return value ? JSON.parse(value) : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function renderDashboard(data) {
     $('currentPrice').textContent = money(data.latest.price);
     $('latestDate').textContent = selectedModelType === 'short' ? `آخرین تیک: ${localTime(data.latest.timestamp)}` : `آخرین روز داده: ${data.latest.timestamp}`;
     const quality = data.dataQuality || {};
@@ -137,9 +143,11 @@ async function load() {
     $('direction').className = `direction ${up ? 'up' : 'down'}`;
     $('direction').textContent = `${up ? '▲' : '▼'} ${pct.format(Math.abs(data.changePercent))}٪ · ${money(Math.abs(data.change))}`;
     $('interval').textContent = `بازه احتمالی ۸۰٪: ${money(data.rangeLow)} تا ${money(data.rangeHigh)}`;
-    $('mae').textContent = `${pct.format(data.backtest.maePercent)}٪`;
+    $('mae').textContent = data.backtest.maePercent == null ? '—' : `${pct.format(data.backtest.maePercent)}٪`;
     $('accuracy').textContent = data.backtest.directionAccuracy == null ? '—' : `${pct.format(data.backtest.directionAccuracy)}٪`;
-    $('testDays').textContent = `${fmt.format(data.backtest.samples)} نمونه نگه‌داشته‌شده`;
+    $('testDays').textContent = data.backtest.samples
+      ? `${fmt.format(data.backtest.samples)} نمونه نگه‌داشته‌شده`
+      : 'مدل اصلی موقتاً در دسترس نیست';
     $('observations').textContent = fmt.format(data.observations);
     $('observationUnit').textContent = selectedModelType === 'short' ? 'کندل ۵ دقیقه‌ای' : 'روز معاملاتی ذخیره‌شده';
     $('modelName').textContent = data.model.name;
@@ -147,19 +155,53 @@ async function load() {
     $('chartEyebrow').textContent = selectedModelType === 'short' ? 'کندل‌های ۵ دقیقه‌ای جلسه جاری' : '۲۶۰ روز معاملاتی اخیر از تاریخچه ذخیره‌شده';
     $('chartTitle').textContent = selectedModelType === 'short' ? 'قیمت هر گرم' : 'روند بلندمدت قیمت هر گرم';
     $('noticeText').innerHTML = selectedModelType === 'short' ? '<b>نکته مهم:</b> خارج ساعت بازار، نرخ داخلی ۲۴ساعته واقعی نیست و مقدار نظری بر اساس حرکت اونس ساخته می‌شود. پیش‌بینی تضمین یا سیگنال معامله نیست.' : '<b>نکته مهم:</b> مدل بلندمدت از قیمت، دلار، اونس و شاخص ریسک داخلی استفاده می‌کند. داده خبری تنها وقتی وارد آموزش می‌شود که پوشش معتبر موجود باشد؛ تعداد روزهای پوشش بالا نمایش داده شده است.';
-    $('riskInfo').textContent = selectedModelType === 'long' ? `شاخص ریسک داخلی (فاصله قیمت بازار از ارزش اونس×دلار): ${pct.format(data.risk.domesticPremium)} · پوشش فعلی خبر تاریخی: ${fmt.format(data.risk.newsCoverageDays)} روز` : '';
+    $('riskInfo').textContent = selectedModelType === 'long' && data.risk ? `شاخص ریسک داخلی (فاصله قیمت بازار از ارزش اونس×دلار): ${pct.format(data.risk.domesticPremium)} · پوشش فعلی خبر تاریخی: ${fmt.format(data.risk.newsCoverageDays)} روز` : '';
     const edge = data.benchmark;
-    $('edgeInfo').className = `edge-info ${edge.hasEdge ? 'positive' : 'warning'}`;
-    $('edgeInfo').textContent = edge.hasEdge
+    $('edgeInfo').className = `edge-info ${edge.hasEdge && !data.fallback ? 'positive' : 'warning'}`;
+    $('edgeInfo').textContent = data.fallback
+      ? `⚠ برآورد موقت نمایش داده شده است: ${data.fallbackReason || 'مدل اصلی داده کافی ندارد'}. وضعیت پیشنهادی: صبر تا تکمیل داده.`
+      : edge.hasEdge
       ? `✓ مدل فعال در بک‌تست ${pct.format(edge.improvementPercent)}٪ بهتر از معیار «بدون تغییر» بوده است. خطای فعال: ${pct.format(edge.activeMaePercent)}٪ · خطای معیار: ${pct.format(edge.neutralMaePercent)}٪`
       : `⚠ پیش‌بینی فعال نمایش داده می‌شود، اما هنوز از معیار «بدون تغییر» بهتر نیست. خطای فعال: ${pct.format(edge.activeMaePercent)}٪ · خطای معیار: ${pct.format(edge.neutralMaePercent)}٪`;
-    if (data.marketAnalysis) renderMarketAnalysis(data.marketAnalysis);
-    drawChart(data.chart);
-    $('status').className = 'status hidden';
+    if (data.marketAnalysis) {
+      renderMarketAnalysis(data.marketAnalysis);
+    } else {
+      $('marketAnalysis').classList.add('hidden');
+      $('tradePlan').classList.add('hidden');
+    }
+    if (data.chart?.length) drawChart(data.chart);
     $('dashboard').classList.remove('hidden');
+}
+
+async function load() {
+  if (loading) return;
+  loading = true;
+  $('status').className = 'status';
+  $('status').textContent = selectedModelType === 'short' ? 'در حال دریافت تیک‌ها، ساخت کندل‌های ۵ دقیقه‌ای و اجرای آزمون…' : 'در حال همگام‌سازی تاریخچه چندساله طلا، دلار و اونس…';
+  $('refresh').disabled = true;
+  try {
+    const horizon = $('horizon').value;
+    const endpoint = selectedModelType === 'short' ? `/api/intraday?karat=${selectedKarat}&horizon=${horizon}` : `/api/longterm?karat=${selectedKarat}&horizon=${horizon}`;
+    const response = await fetch(endpoint);
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'خطای ناشناخته');
+    remember(data);
+    renderDashboard(data);
+    if (data.fallback || data.analysisWarning) {
+      $('status').className = 'status error';
+      $('status').textContent = data.fallback
+        ? `برآورد موقت فعال است: ${data.fallbackReason}`
+        : `قیمت و پیش‌بینی نمایش داده می‌شود؛ تحلیل جانبی موقتاً ناقص است: ${data.analysisWarning}`;
+    } else {
+      $('status').className = 'status hidden';
+    }
   } catch (error) {
+    const cached = recalled();
+    if (cached) renderDashboard(cached);
     $('status').className = 'status error';
-    $('status').textContent = error.message;
+    $('status').textContent = cached
+      ? `به‌روزرسانی ناموفق بود؛ آخرین داده و پیش‌بینی ذخیره‌شده نمایش داده می‌شود. ${error.message}`
+      : error.message;
   } finally {
     $('refresh').disabled = false;
     loading = false;

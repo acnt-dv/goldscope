@@ -129,6 +129,69 @@ def persist_intraday(series: list[dict[str, object]]) -> None:
         )
 
 
+def merge_persisted_intraday(
+    current_series: list[dict[str, object]], limit: int = 3000
+) -> list[dict[str, object]]:
+    """Combine recent persisted sessions with the current source session for training."""
+    if not current_series:
+        return []
+    latest_current = max(int(row["timestamp"]) for row in current_series)
+    with _db() as connection:
+        stored = list(
+            connection.execute(
+                """SELECT timestamp,gold18_toman,mode FROM intraday_candles
+                   WHERE timestamp <= ? ORDER BY timestamp DESC LIMIT ?""",
+                (latest_current + 5 * 60_000, limit),
+            )
+        )
+    combined = {
+        int(row["timestamp"]): {
+            "timestamp": int(row["timestamp"]),
+            "price18": float(row["gold18_toman"]),
+            "mode": str(row["mode"]),
+        }
+        for row in reversed(stored)
+        if float(row["gold18_toman"]) > 0
+    }
+    # The source quote wins when a stored candle has the same five-minute bucket.
+    for row in current_series:
+        if float(row["price18"]) > 0:
+            combined[int(row["timestamp"])] = dict(row)
+    return [combined[timestamp] for timestamp in sorted(combined)]
+
+
+def _split_intraday_sessions(
+    series: list[dict[str, object]], multiplier: float
+) -> list[list[dict[str, object]]]:
+    """Split candles at closures/gaps so overnight moves never become 5-minute returns."""
+    unique = {int(row["timestamp"]): row for row in series}
+    sessions: list[list[dict[str, object]]] = []
+    current: list[dict[str, object]] = []
+    previous_time: int | None = None
+    previous_price: float | None = None
+    for timestamp in sorted(unique):
+        row = unique[timestamp]
+        price = float(row["price18"]) * multiplier
+        if price <= 0:
+            continue
+        gap = timestamp - previous_time if previous_time is not None else 0
+        jump = abs(price / previous_price - 1) if previous_price else 0
+        if current and (gap > 30 * 60_000 or gap <= 0 or jump > 0.12):
+            sessions.append(current)
+            current = []
+        current.append({
+            "timestamp": timestamp,
+            "price": price,
+            "price18": float(row["price18"]),
+            "mode": str(row.get("mode") or "stored"),
+        })
+        previous_time = timestamp
+        previous_price = price
+    if current:
+        sessions.append(current)
+    return sessions
+
+
 def persist_prediction(result: dict[str, object], model_type: str) -> None:
     backtest = result.get("backtest", {})
     model = result.get("model", {})
@@ -669,20 +732,31 @@ def intraday_forecast(
     if horizon_minutes not in (15, 30, 60, 240):
         raise ValueError("بازه پیش‌بینی معتبر نیست.")
     multiplier = karat / 18
-    prices = [float(row["price18"]) * multiplier for row in series]
     horizon = horizon_minutes // 5
-    returns = [math.log(prices[i] / prices[i - 1]) for i in range(1, len(prices))]
-    if len(prices) < max(80, horizon + 45):
-        raise RuntimeError("داده ۵ دقیقه‌ای کافی برای این بازه وجود ندارد.")
-
+    sessions = _split_intraday_sessions(series, multiplier)
+    if not sessions or len(sessions[-1]) < 22:
+        raise RuntimeError("برای محاسبه ویژگی‌های جاری حداقل ۲۲ کندل این جلسه لازم است.")
+    latest_session = sessions[-1]
     x: list[list[float]] = []
     y: list[float] = []
-    for index in range(21, len(prices) - horizon):
-        x.append(_features(returns, index))
-        y.append(math.log(prices[index + horizon] / prices[index]))
+    training_sessions = 0
+    for session in sessions:
+        session_prices = [float(row["price"]) for row in session]
+        if len(session_prices) <= 21 + horizon:
+            continue
+        training_sessions += 1
+        session_returns = [
+            math.log(session_prices[index] / session_prices[index - 1])
+            for index in range(1, len(session_prices))
+        ]
+        for index in range(21, len(session_prices) - horizon):
+            x.append(_features(session_returns, index))
+            y.append(math.log(session_prices[index + horizon] / session_prices[index]))
     minimum_training_samples = 30 if horizon_minutes == 240 else 40
     if len(x) < minimum_training_samples:
-        raise RuntimeError("نمونه‌های آموزشی درون‌روزی کافی نیست.")
+        raise RuntimeError(
+            f"نمونه‌های آموزشی درون‌روزی کافی نیست: {len(x)} از {minimum_training_samples}"
+        )
 
     test_size = min(60, max(20, len(x) // 5))
     split = len(x) - test_size
@@ -710,7 +784,12 @@ def intraday_forecast(
     directions = [(estimate >= 0) == (actual >= 0) for estimate, actual in zip(estimates, actual_holdout)]
 
     beta = _ridge_fit(x, y, weights=_recency_weights(len(x), half_life=96, floor=0.12))
-    current_features = _features(returns + [0.0], len(returns))
+    current_prices = [float(row["price"]) for row in latest_session]
+    current_returns = [
+        math.log(current_prices[index] / current_prices[index - 1])
+        for index in range(1, len(current_prices))
+    ]
+    current_features = _features(current_returns + [0.0], len(current_returns))
     ridge_prediction = _predict(beta, current_features)
     predicted_return = {
         "ridge": ridge_prediction,
@@ -719,20 +798,20 @@ def intraday_forecast(
     }[selected_model]
     residuals = [actual - estimate for actual, estimate in zip(actual_holdout, estimates)]
     sigma = statistics.pstdev(residuals)
-    current = prices[-1]
+    current = current_prices[-1]
     prediction = current * math.exp(predicted_return)
     low = current * math.exp(predicted_return - 1.28 * sigma)
     high = current * math.exp(predicted_return + 1.28 * sigma)
-    chart_rows = series[-144:]
+    chart_rows = latest_session[-144:]
     chart = [
         {
             "timestamp": row["timestamp"],
-            "price": round(float(row["price18"]) * multiplier),
+            "price": round(float(row["price"])),
             "mode": row["mode"],
         }
         for row in chart_rows
     ]
-    quote_time = datetime.fromtimestamp(float(series[-1]["timestamp"]) / 1000).astimezone()
+    quote_time = datetime.fromtimestamp(float(latest_session[-1]["timestamp"]) / 1000).astimezone()
     age_minutes = max(0.0, (datetime.now().astimezone() - quote_time).total_seconds() / 60)
     return {
         "source": "TGJU",
@@ -773,7 +852,7 @@ def intraday_forecast(
         "usdToman": meta.get("usdToman"),
         "lastDirect": meta["lastDirect"],
         "chart": chart,
-        "observations": len(prices),
+        "observations": sum(len(session) for session in sessions),
         "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
         "dataQuality": {
             "sourceMode": meta.get("dataSourceMode", "live"),
@@ -781,6 +860,95 @@ def intraday_forecast(
             "isFresh": meta.get("dataSourceMode", "live") == "live" and age_minutes <= 45,
             "warnings": meta.get("fetchWarnings") or {},
             "sourceConsensus": meta.get("sourceConsensus") or {},
+            "currentSessionCandles": len(latest_session),
+            "trainingSessions": training_sessions,
+            "trainingSamples": len(x),
+        },
+    }
+
+
+def intraday_fallback_forecast(
+    series: list[dict[str, object]], meta: dict[str, object], karat: int,
+    horizon_minutes: int, reason: str,
+) -> dict[str, object]:
+    """Always return a cautious scenario when the validated model cannot be trained."""
+    if karat not in (18, 24) or horizon_minutes not in (15, 30, 60, 240):
+        raise ValueError("عیار یا بازه پیش‌بینی معتبر نیست.")
+    multiplier = karat / 18
+    sessions = _split_intraday_sessions(series, multiplier)
+    if not sessions:
+        raise RuntimeError("هیچ قیمت معتبر جاری یا ذخیره‌شده‌ای وجود ندارد.")
+    latest_session = sessions[-1]
+    horizon = horizon_minutes // 5
+    recent_returns: list[float] = []
+    for session in sessions[-12:]:
+        values = [float(row["price"]) for row in session]
+        recent_returns.extend(
+            math.log(values[index] / values[index - 1])
+            for index in range(1, len(values))
+        )
+    recent_returns = recent_returns[-96:]
+    sigma = statistics.pstdev(recent_returns) if len(recent_returns) > 1 else 0.0
+    if recent_returns:
+        short_drift = statistics.fmean(recent_returns[-min(6, len(recent_returns)):])
+        raw_return = short_drift * horizon
+        cap = max(0.002, 2.0 * sigma * math.sqrt(horizon))
+        predicted_return = max(-cap, min(cap, raw_return))
+    else:
+        predicted_return = 0.0
+    uncertainty = max(0.003, 1.28 * sigma * math.sqrt(horizon))
+    current = float(latest_session[-1]["price"])
+    prediction = current * math.exp(predicted_return)
+    quote_time = datetime.fromtimestamp(
+        float(latest_session[-1]["timestamp"]) / 1000
+    ).astimezone()
+    age_minutes = max(
+        0.0, (datetime.now().astimezone() - quote_time).total_seconds() / 60
+    )
+    chart_rows = latest_session[-144:]
+    return {
+        "source": "TGJU + stored candles",
+        "unit": "تومان / گرم",
+        "karat": karat,
+        "horizonMinutes": horizon_minutes,
+        "mode": meta.get("mode", "cached"),
+        "modeDescription": "برآورد موقت کم‌اعتماد؛ تا تکمیل داده مدل اصلی",
+        "latest": {"timestamp": quote_time.isoformat(timespec="seconds"), "price": round(current)},
+        "prediction": round(prediction),
+        "change": round(prediction - current),
+        "changePercent": round((prediction / current - 1) * 100, 3),
+        "rangeLow": round(current * math.exp(predicted_return - uncertainty)),
+        "rangeHigh": round(current * math.exp(predicted_return + uncertainty)),
+        "backtest": {"samples": 0, "maePercent": None, "directionAccuracy": None},
+        "benchmark": {
+            "neutralMaePercent": None, "activeMaePercent": None,
+            "hasEdge": False, "improvementPercent": None,
+        },
+        "model": {"id": "fallback", "name": "برآورد موقت کم‌اعتماد"},
+        "usdToman": meta.get("usdToman"),
+        "lastDirect": meta.get("lastDirect"),
+        "chart": [
+            {
+                "timestamp": row["timestamp"], "price": round(float(row["price"])),
+                "mode": row["mode"],
+            }
+            for row in chart_rows
+        ],
+        "observations": sum(len(session) for session in sessions),
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "fallback": True,
+        "fallbackReason": reason,
+        "dataQuality": {
+            "sourceMode": meta.get("dataSourceMode", "stored"),
+            "ageMinutes": round(age_minutes, 1),
+            "isFresh": meta.get("dataSourceMode") == "live" and age_minutes <= 45,
+            "warnings": meta.get("fetchWarnings") or {},
+            "sourceConsensus": meta.get("sourceConsensus") or {},
+            "currentSessionCandles": len(latest_session),
+            "trainingSessions": 0,
+            "trainingSamples": 0,
+            "fallback": True,
+            "fallbackReason": reason,
         },
     }
 
@@ -864,6 +1032,68 @@ def long_term_forecast(rows: list[dict[str, object]], karat: int, horizon_name: 
             "recentWeightHalfLifeDays": 252,
             "oldestSampleWeight": round(final_weights[0], 4),
         },
+    }
+
+
+def long_term_fallback_forecast(
+    rows: list[dict[str, object]], karat: int, horizon_name: str, reason: str
+) -> dict[str, object]:
+    """Return a visible low-confidence long-horizon scenario from persisted prices."""
+    if karat not in (18, 24):
+        raise ValueError("فقط عیار ۱۸ و ۲۴ پشتیبانی می‌شود.")
+    horizons = {"daily": 1, "weekly": 5, "monthly": 21}
+    labels = {"daily": "روزانه", "weekly": "هفتگی", "monthly": "ماهانه"}
+    if horizon_name not in horizons or not rows:
+        raise RuntimeError("داده ذخیره‌شده‌ای برای برآورد بلندمدت وجود ندارد.")
+    horizon = horizons[horizon_name]
+    multiplier = karat / 18
+    selected = rows[-260:]
+    prices = [float(row["gold18_toman"]) * multiplier for row in selected]
+    returns = [
+        math.log(prices[index] / prices[index - 1])
+        for index in range(1, len(prices))
+        if prices[index] > 0 and prices[index - 1] > 0
+    ]
+    recent = returns[-60:]
+    sigma = statistics.pstdev(recent) if len(recent) > 1 else 0.0
+    drift = statistics.fmean(recent[-min(10, len(recent)):]) if recent else 0.0
+    predicted_return = max(-0.05, min(0.05, drift * horizon))
+    uncertainty = max(0.01, 1.28 * sigma * math.sqrt(horizon))
+    current = prices[-1]
+    prediction = current * math.exp(predicted_return)
+    return {
+        "source": "TGJU persisted daily",
+        "unit": "تومان / گرم", "karat": karat, "horizon": horizon_name,
+        "horizonLabel": labels[horizon_name], "mode": "historical",
+        "modeDescription": "برآورد موقت بر پایه آخرین داده‌های ذخیره‌شده",
+        "latest": {"timestamp": selected[-1]["date"], "price": round(current)},
+        "prediction": round(prediction), "change": round(prediction - current),
+        "changePercent": round((prediction / current - 1) * 100, 3),
+        "rangeLow": round(current * math.exp(predicted_return - uncertainty)),
+        "rangeHigh": round(current * math.exp(predicted_return + uncertainty)),
+        "backtest": {"samples": 0, "maePercent": None, "directionAccuracy": None},
+        "benchmark": {
+            "neutralMaePercent": None, "activeMaePercent": None,
+            "hasEdge": False, "improvementPercent": None,
+        },
+        "model": {"id": "fallback", "name": "برآورد موقت کم‌اعتماد"},
+        "observations": len(selected),
+        "risk": {
+            "domesticPremium": round(float(selected[-1].get("domestic_risk") or 0), 4),
+            "newsCoverageDays": sum(row.get("news_tone") is not None for row in selected),
+        },
+        "chart": [
+            {
+                "timestamp": row["date"],
+                "price": round(float(row["gold18_toman"]) * multiplier),
+                "mode": "historical",
+            }
+            for row in selected
+        ],
+        "generatedAt": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "training": {"latestIncluded": selected[-1]["date"], "historyRows": len(selected)},
+        "fallback": True,
+        "fallbackReason": reason,
     }
 
 
@@ -1128,15 +1358,26 @@ class Handler(SimpleHTTPRequestHandler):
                 query = parse_qs(parsed.query)
                 karat = int(query.get("karat", ["18"])[0])
                 horizon = int(query.get("horizon", ["60"])[0])
-                series, meta = build_iran_intraday(fetch_intraday_ticks())
-                persist_intraday(series)
-                result = intraday_forecast(series, meta, karat, horizon)
+                current_series, meta = build_iran_intraday(fetch_intraday_ticks())
+                persist_intraday(current_series)
+                series = merge_persisted_intraday(current_series)
+                try:
+                    result = intraday_forecast(series, meta, karat, horizon)
+                except RuntimeError as model_error:
+                    result = intraday_fallback_forecast(
+                        series, meta, karat, horizon, str(model_error)
+                    )
                 with _db() as connection:
                     daily_rows = [dict(row) for row in connection.execute("SELECT * FROM daily_market ORDER BY date")]
                 if len(daily_rows) < 250:
                     daily_rows = fetch_daily_markets()
-                daily_rows, _ = merge_latest_daily_row(daily_rows, series, meta)
-                result["marketAnalysis"] = market_analysis(series, meta, karat, daily_rows, result)
+                daily_rows, _ = merge_latest_daily_row(daily_rows, current_series, meta)
+                try:
+                    result["marketAnalysis"] = market_analysis(
+                        series, meta, karat, daily_rows, result
+                    )
+                except (RuntimeError, ValueError) as analysis_error:
+                    result["analysisWarning"] = str(analysis_error)
                 persist_prediction(result, "short")
                 self._json(200, result)
             except (ValueError, RuntimeError) as exc:
@@ -1150,15 +1391,31 @@ class Handler(SimpleHTTPRequestHandler):
                 karat = int(query.get("karat", ["18"])[0])
                 horizon = query.get("horizon", ["daily"])[0]
                 daily_rows = fetch_daily_markets()
-                series, meta = build_iran_intraday(fetch_intraday_ticks())
-                persist_intraday(series)
-                daily_rows, data_quality = merge_latest_daily_row(daily_rows, series, meta)
-                result = long_term_forecast(daily_rows, karat, horizon)
-                result["dataQuality"] = data_quality
-                short_context = intraday_forecast(series, meta, karat, 60)
-                result["marketAnalysis"] = market_analysis(
-                    series, meta, karat, daily_rows, short_context
+                current_series, meta = build_iran_intraday(fetch_intraday_ticks())
+                persist_intraday(current_series)
+                series = merge_persisted_intraday(current_series)
+                daily_rows, data_quality = merge_latest_daily_row(
+                    daily_rows, current_series, meta
                 )
+                try:
+                    result = long_term_forecast(daily_rows, karat, horizon)
+                except RuntimeError as model_error:
+                    result = long_term_fallback_forecast(
+                        daily_rows, karat, horizon, str(model_error)
+                    )
+                result["dataQuality"] = data_quality
+                try:
+                    short_context = intraday_forecast(series, meta, karat, 60)
+                except RuntimeError as short_error:
+                    short_context = intraday_fallback_forecast(
+                        series, meta, karat, 60, str(short_error)
+                    )
+                try:
+                    result["marketAnalysis"] = market_analysis(
+                        series, meta, karat, daily_rows, short_context
+                    )
+                except (RuntimeError, ValueError) as analysis_error:
+                    result["analysisWarning"] = str(analysis_error)
                 persist_prediction(result, "long")
                 self._json(200, result)
             except (ValueError, RuntimeError) as exc:

@@ -4,7 +4,10 @@ from datetime import datetime
 from pathlib import Path
 
 import app
-from app import forecast, health_status, intraday_forecast, long_term_forecast, market_analysis
+from app import (
+    forecast, health_status, intraday_fallback_forecast, intraday_forecast,
+    long_term_fallback_forecast, long_term_forecast, market_analysis,
+)
 
 
 class ForecastTests(unittest.TestCase):
@@ -69,6 +72,69 @@ class ForecastTests(unittest.TestCase):
         result = intraday_forecast(series, meta, 18, 240)
         self.assertEqual(result["horizonMinutes"], 240)
         self.assertGreaterEqual(result["backtest"]["samples"], 20)
+
+    def test_short_current_session_uses_prior_sessions_without_crossing_gaps(self):
+        series = []
+        value = 17_000_000
+        start = 1_780_000_000_000
+        for session_index, candle_count in enumerate((120, 120, 39)):
+            session_start = start + session_index * 24 * 60 * 60_000
+            for candle_index in range(candle_count):
+                value *= 1 + (0.0005 if candle_index % 4 else -0.0002)
+                series.append({
+                    "timestamp": session_start + candle_index * 300_000,
+                    "price18": value,
+                    "mode": "direct",
+                })
+            value *= 1.03
+        meta = {
+            "mode": "direct", "lastDirect": "2026-08-25T14:10:00+03:30",
+            "lastOunce": "2026-08-25T14:10:00+03:30", "usdToman": 175000,
+        }
+        result = intraday_forecast(series, meta, 18, 240)
+        self.assertEqual(result["horizonMinutes"], 240)
+        self.assertEqual(result["dataQuality"]["currentSessionCandles"], 39)
+        self.assertEqual(result["dataQuality"]["trainingSessions"], 2)
+        self.assertGreaterEqual(result["dataQuality"]["trainingSamples"], 30)
+        self.assertEqual(len(result["chart"]), 39)
+
+    def test_intraday_fallback_always_returns_visible_prediction(self):
+        series = [
+            {
+                "timestamp": 1_780_000_000_000 + index * 300_000,
+                "price18": 17_000_000 * (1 + index * 0.0002),
+                "mode": "direct",
+            }
+            for index in range(8)
+        ]
+        meta = {
+            "mode": "direct", "dataSourceMode": "live",
+            "lastDirect": "2026-08-25T10:00:00+03:30",
+        }
+        result = intraday_fallback_forecast(
+            series, meta, 18, 60, "نمونه آموزشی کافی نیست"
+        )
+        self.assertTrue(result["fallback"])
+        self.assertGreater(result["prediction"], 0)
+        self.assertTrue(result["chart"])
+        self.assertIsNone(result["backtest"]["maePercent"])
+
+    def test_long_term_fallback_returns_persisted_scenario(self):
+        rows = [
+            {
+                "date": f"2026/08/{index + 1:02d}",
+                "gold18_toman": 20_000_000 + index * 20_000,
+                "domestic_risk": 0.02,
+                "news_tone": None,
+            }
+            for index in range(20)
+        ]
+        result = long_term_fallback_forecast(
+            rows, 24, "weekly", "مدل اصلی آماده نیست"
+        )
+        self.assertTrue(result["fallback"])
+        self.assertGreater(result["prediction"], 0)
+        self.assertEqual(result["horizon"], "weekly")
 
     def test_long_term_horizons(self):
         rows = []
