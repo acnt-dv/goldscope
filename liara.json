@@ -1,5 +1,6 @@
 {
   "args": ["python3 main.py"],
+  "port": 8000,
   "disks": [
     {
       "name": "database",
