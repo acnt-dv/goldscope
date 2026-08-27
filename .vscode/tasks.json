@@ -44,7 +44,7 @@
     {
       "label": "GoldScope: Build Liara ZIP",
       "type": "shell",
-      "command": "mkdir -p outputs && zip -FS -r outputs/goldscope-liara.zip app.py main.py liara.json requirements.txt README.md LIARA_DEPLOY_FA.md static seed",
+      "command": "mkdir -p outputs && zip -FS -r outputs/goldscope-liara.zip VERSION CHANGELOG.md app.py main.py liara.json requirements.txt README.md LIARA_DEPLOY_FA.md static seed",
       "options": {
         "cwd": "${workspaceFolder}"
       },

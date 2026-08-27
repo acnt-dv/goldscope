@@ -1,16 +1,26 @@
 import tempfile
 import unittest
+import re
 from datetime import datetime
 from pathlib import Path
 
 import app
 from app import (
-    forecast, health_status, intraday_fallback_forecast, intraday_forecast,
+    APP_VERSION, app_metadata, forecast, health_status,
+    intraday_fallback_forecast, intraday_forecast,
     long_term_fallback_forecast, long_term_forecast, market_analysis,
 )
 
 
 class ForecastTests(unittest.TestCase):
+    def test_version_is_semantic_and_exposed(self):
+        self.assertRegex(
+            APP_VERSION,
+            re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+                       r"(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"),
+        )
+        self.assertEqual(app_metadata()["version"], APP_VERSION)
+
     def test_health_endpoint_initializes_database(self):
         original_path = app.DB_PATH
         original_seed_path = app.SEED_DB_PATH
@@ -24,6 +34,8 @@ class ForecastTests(unittest.TestCase):
                 app.SEED_DB_PATH = original_seed_path
         self.assertEqual(status, 200)
         self.assertEqual(payload["database"], "ok")
+        self.assertEqual(payload["version"], APP_VERSION)
+        self.assertEqual(payload["app"]["version"], APP_VERSION)
         self.assertEqual(payload["counts"]["intradayCandles"], 0)
 
     def test_forecast_scales_fineness(self):

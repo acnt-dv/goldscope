@@ -114,6 +114,20 @@ function recalled() {
   }
 }
 
+async function loadVersion() {
+  try {
+    const response = await fetch('/api/version');
+    if (!response.ok) return;
+    const metadata = await response.json();
+    $('appVersion').textContent = `نسخه ${metadata.version}`;
+    $('appVersion').title = metadata.commit
+      ? `commit ${metadata.commit}`
+      : 'نسخه فعال GoldScope';
+  } catch (_) {
+    // Version information is non-critical; forecasts must remain available.
+  }
+}
+
 function renderDashboard(data) {
     $('currentPrice').textContent = money(data.latest.price);
     $('latestDate').textContent = selectedModelType === 'short' ? `آخرین تیک: ${localTime(data.latest.timestamp)}` : `آخرین روز داده: ${data.latest.timestamp}`;
@@ -222,5 +236,6 @@ document.querySelectorAll('[data-model]').forEach(button => button.addEventListe
 $('refresh').addEventListener('click', load);
 $('horizon').addEventListener('change', load);
 setHorizons();
+loadVersion();
 load();
 setInterval(load, 60_000);

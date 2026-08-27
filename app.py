@@ -24,6 +24,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 
 ROOT = Path(__file__).resolve().parent
+VERSION_PATH = ROOT / "VERSION"
 DB_PATH = Path(os.environ.get("GOLD_DB_PATH", str(ROOT / "data" / "gold_model.db"))).expanduser()
 SEED_DB_PATH = ROOT / "seed" / "gold_model.db"
 TGJU_URL = (
@@ -62,6 +63,37 @@ NETWORK_ERRORS = (
     urllib.error.URLError, TimeoutError, ssl.SSLError, ConnectionError,
     http.client.HTTPException, OSError,
 )
+
+
+def _load_app_version() -> str:
+    """Load the SemVer release number from the packaged source of truth."""
+    try:
+        version = VERSION_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        version = "0.0.0+unknown"
+    if not re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?",
+        version,
+    ):
+        raise RuntimeError(f"Invalid semantic version in {VERSION_PATH}: {version!r}")
+    return version
+
+
+APP_VERSION = _load_app_version()
+
+
+def app_metadata() -> dict[str, str]:
+    """Return release metadata suitable for health checks and UI display."""
+    metadata = {"name": "GoldScope", "version": APP_VERSION}
+    commit = os.environ.get("APP_COMMIT") or os.environ.get("GIT_COMMIT")
+    build_time = os.environ.get("APP_BUILD_TIME")
+    if commit:
+        metadata["commit"] = commit
+    if build_time:
+        metadata["buildTime"] = build_time
+    return metadata
 
 
 def _read_url(request: urllib.request.Request, timeout: int, attempts: int = 3) -> bytes:
@@ -1330,11 +1362,14 @@ def health_status() -> tuple[int, dict[str, object]]:
             }
     except sqlite3.Error as exc:
         return 503, {
-            "status": "unhealthy", "database": "unavailable", "error": str(exc),
+            "status": "unhealthy", "database": "unavailable",
+            "version": APP_VERSION, "app": app_metadata(), "error": str(exc),
         }
     collector_state = "degraded" if _collector_status.get("lastError") else "ok"
     return 200, {
         "status": collector_state,
+        "version": APP_VERSION,
+        "app": app_metadata(),
         "database": "ok",
         "databasePath": str(DB_PATH),
         "counts": counts,
@@ -1352,6 +1387,9 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/health":
             status, payload = health_status()
             self._json(status, payload)
+            return
+        if parsed.path == "/api/version":
+            self._json(200, app_metadata())
             return
         if parsed.path == "/api/intraday":
             try:
@@ -1426,6 +1464,7 @@ class Handler(SimpleHTTPRequestHandler):
         if parsed.path == "/api/data-status":
             with _db() as connection:
                 status = {
+                    "version": APP_VERSION,
                     "intradayCandles": connection.execute("SELECT COUNT(*) FROM intraday_candles").fetchone()[0],
                     "dailyRows": connection.execute("SELECT COUNT(*) FROM daily_market").fetchone()[0],
                     "predictions": connection.execute("SELECT COUNT(*) FROM predictions").fetchone()[0],
@@ -1450,6 +1489,7 @@ class Handler(SimpleHTTPRequestHandler):
             self._json(500, {"error": f"خطای پیش‌بینی: {exc}"})
 
     def end_headers(self) -> None:
+        self.send_header("X-GoldScope-Version", APP_VERSION)
         if not self.path.startswith("/api/") and urlparse(self.path).path != "/health":
             self.send_header("Cache-Control", "no-store, max-age=0")
         super().end_headers()
@@ -1475,7 +1515,7 @@ def run_server() -> None:
         pass
     start_collector()
     server = ThreadingHTTPServer((host, port), Handler)
-    print(f"GoldScope is running at http://{host}:{port}")
+    print(f"GoldScope v{APP_VERSION} is running at http://{host}:{port}")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
